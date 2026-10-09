@@ -20,9 +20,10 @@
 #define INVALID_INODE     0xFFFFFFFFu
 #define ROOT_INODE_NUM    1u            /* inode 0 is reserved/never used */
 
-#define INODE_TYPE_FREE   0
-#define INODE_TYPE_FILE   1
-#define INODE_TYPE_DIR    2
+#define INODE_TYPE_FREE    0
+#define INODE_TYPE_FILE    1
+#define INODE_TYPE_DIR     2
+#define INODE_TYPE_SYMLINK 3   /* target path stored as raw bytes in direct[0]'s data block */
 
 /* permission bits, unix-style rwx for owner only (single simulated-owner model) */
 #define PERM_OWNER_READ   0x4
