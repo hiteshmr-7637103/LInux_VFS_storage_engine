@@ -1,0 +1,27 @@
+# Binary executables
+bin/
+*.exe
+*.out
+
+# Intermediate object files
+obj/
+*.o
+
+# Virtual disk image files (test storage)
+*.img
+virtual_disk.img
+
+# IDE / Editor configuration
+.vscode/
+.idea/
+*.swp
+*~
+
+# System / OS generated files
+.DS_Store
+Thumbs.db
+
+# other files 
+vfs_project_roadmap.md.tmp.15527.7f0f870a4a97
+Mini Project Title & Description - POS.docx
+.~lock.Mini Project Title & Description - POS.docx#
