@@ -10,6 +10,10 @@
 int vfs_mount(const char *disk_path);
 void vfs_unmount(void);
 
+/* current-working-directory (relative paths elsewhere resolve against this) */
+int vfs_chdir(const char *path);
+void vfs_getcwd(char *buf, size_t size);
+
 int vfs_mkdir(const char *path);
 int vfs_create(const char *path);
 ssize_t vfs_read(const char *path, void *buf, size_t size, off_t offset);

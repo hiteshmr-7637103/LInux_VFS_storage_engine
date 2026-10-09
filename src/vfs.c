@@ -18,6 +18,27 @@ static void set_error(const char *msg) {
 }
 const char *vfs_last_error(void) { return g_last_error; }
 
+/* current-working-directory state (per mounted session, mirrors a shell's $PWD) */
+#define MAX_CWD_DEPTH 32
+#define MAX_CWD_LEN 1024
+static uint32_t g_cwd_inode = ROOT_INODE_NUM;
+static char g_cwd_components[MAX_CWD_DEPTH][NAME_MAX_LEN];
+static int g_cwd_depth = 0;
+
+static void rebuild_cwd_string(char *buf, size_t size) {
+    if (g_cwd_depth == 0) { snprintf(buf, size, "/"); return; }
+    size_t pos = 0;
+    for (int i = 0; i < g_cwd_depth; i++) {
+        int n = snprintf(buf + pos, size - pos, "/%s", g_cwd_components[i]);
+        if (n < 0 || (size_t)n >= size - pos) break;
+        pos += (size_t)n;
+    }
+}
+
+void vfs_getcwd(char *buf, size_t size) {
+    rebuild_cwd_string(buf, size);
+}
+
 int vfs_mount(const char *disk_path) {
     if (disk_open(disk_path) != 0) {
         set_error("cannot open disk image");
@@ -32,6 +53,9 @@ int vfs_mount(const char *disk_path) {
     }
     sb.clean_shutdown = 0;          /* mark dirty while mounted; set back to 1 on clean unmount */
     save_superblock(&sb);
+
+    g_cwd_inode = ROOT_INODE_NUM;
+    g_cwd_depth = 0;
     return 0;
 }
 
@@ -175,12 +199,12 @@ static int split_path(const char *path, char components[][NAME_MAX_LEN], int max
 
 #define MAX_PATH_COMPONENTS 32
 
-/* resolves full path to its inode number */
+/* resolves full path to its inode number; relative paths (no leading '/') start from cwd */
 static int resolve_path(const char *path, uint32_t *out_inode_num) {
     char comps[MAX_PATH_COMPONENTS][NAME_MAX_LEN];
     int n = split_path(path, comps, MAX_PATH_COMPONENTS);
-    uint32_t cur = ROOT_INODE_NUM;
-    if (n == 0) { *out_inode_num = ROOT_INODE_NUM; return 0; }
+    uint32_t cur = (path[0] == '/') ? ROOT_INODE_NUM : g_cwd_inode;
+    if (n == 0) { *out_inode_num = cur; return 0; }
     for (int i = 0; i < n; i++) {
         inode_t cur_inode;
         if (read_inode(cur, &cur_inode) != 0) { set_error("I/O error reading inode"); return -1; }
@@ -201,7 +225,7 @@ static int resolve_parent(const char *path, uint32_t *out_parent_inode_num, char
     char comps[MAX_PATH_COMPONENTS][NAME_MAX_LEN];
     int n = split_path(path, comps, MAX_PATH_COMPONENTS);
     if (n == 0) { set_error("invalid path"); return -1; }
-    uint32_t cur = ROOT_INODE_NUM;
+    uint32_t cur = (path[0] == '/') ? ROOT_INODE_NUM : g_cwd_inode;
     for (int i = 0; i < n - 1; i++) {
         inode_t cur_inode;
         if (read_inode(cur, &cur_inode) != 0) { set_error("I/O error reading inode"); return -1; }
@@ -215,6 +239,59 @@ static int resolve_parent(const char *path, uint32_t *out_parent_inode_num, char
     }
     *out_parent_inode_num = cur;
     strncpy(leaf_name, comps[n - 1], NAME_MAX_LEN - 1);
+    return 0;
+}
+
+int vfs_chdir(const char *path) {
+    char comps[MAX_PATH_COMPONENTS][NAME_MAX_LEN];
+    int n = split_path(path, comps, MAX_PATH_COMPONENTS);
+
+    uint32_t cur = (path[0] == '/') ? ROOT_INODE_NUM : g_cwd_inode;
+    char new_stack[MAX_CWD_DEPTH][NAME_MAX_LEN];
+    int new_depth;
+    if (path[0] == '/') {
+        new_depth = 0;
+    } else {
+        new_depth = g_cwd_depth;
+        memcpy(new_stack, g_cwd_components, sizeof(new_stack));
+    }
+
+    for (int i = 0; i < n; i++) {
+        inode_t cur_inode;
+        if (read_inode(cur, &cur_inode) != 0) { set_error("I/O error reading inode"); return -1; }
+        if (cur_inode.type != INODE_TYPE_DIR) { set_error("not a directory"); return -1; }
+        if (check_access(&cur_inode, PERM_OWNER_EXEC) != 0) return -1;
+
+        if (strcmp(comps[i], ".") == 0) {
+            continue;
+        } else if (strcmp(comps[i], "..") == 0) {
+            uint32_t parent;
+            if (dir_find_entry(&cur_inode, "..", &parent) != 0) { set_error("corrupt directory: missing .."); return -1; }
+            cur = parent;
+            if (new_depth > 0) new_depth--;
+            continue;
+        }
+
+        uint32_t next;
+        if (dir_find_entry(&cur_inode, comps[i], &next) != 0) {
+            set_error("no such file or directory");
+            return -1;
+        }
+        if (new_depth >= MAX_CWD_DEPTH) { set_error("path too deep"); return -1; }
+        strncpy(new_stack[new_depth], comps[i], NAME_MAX_LEN - 1);
+        new_stack[new_depth][NAME_MAX_LEN - 1] = '\0';
+        new_depth++;
+        cur = next;
+    }
+
+    inode_t final_inode;
+    if (read_inode(cur, &final_inode) != 0) { set_error("I/O error reading inode"); return -1; }
+    if (final_inode.type != INODE_TYPE_DIR) { set_error("not a directory"); return -1; }
+    if (check_access(&final_inode, PERM_OWNER_EXEC) != 0) return -1;
+
+    g_cwd_inode = cur;
+    g_cwd_depth = new_depth;
+    memcpy(g_cwd_components, new_stack, sizeof(g_cwd_components));
     return 0;
 }
 
@@ -312,6 +389,8 @@ int vfs_create(const char *path) {
 }
 
 ssize_t vfs_read(const char *path, void *buf, size_t size, off_t offset) {
+    if (offset < 0) { set_error("negative offset"); return -1; }
+
     uint32_t inode_num;
     if (resolve_path(path, &inode_num) != 0) return -1;
     inode_t inode;
@@ -339,6 +418,8 @@ ssize_t vfs_read(const char *path, void *buf, size_t size, off_t offset) {
 }
 
 ssize_t vfs_write(const char *path, const void *buf, size_t size, off_t offset) {
+    if (offset < 0) { set_error("negative offset"); return -1; }
+
     uint32_t inode_num;
     if (resolve_path(path, &inode_num) != 0) return -1;
     inode_t inode;

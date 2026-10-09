@@ -12,6 +12,7 @@
 
 #define DEFAULT_DISK_PATH "virtual_disk.img"
 #define MAX_LINE 1024
+#define MAX_CWD_PRINT 1024
 
 static int g_mounted = 0;
 
@@ -148,7 +149,9 @@ static void print_help(void) {
     printf(
         "Commands:\n"
         "  format <diskfile>            create/format a new virtual disk\n"
-        "  ls <path>                    list directory contents\n"
+        "  cd <path>                    change current directory (default: /)\n"
+        "  pwd                          print current directory\n"
+        "  ls [path]                    list directory contents (default: cwd)\n"
         "  mkdir <path>                 create a directory (parent must exist)\n"
         "  touch <path>                 create an empty file\n"
         "  write <path> <off> <text>    write text at byte offset\n"
@@ -182,7 +185,9 @@ int main(int argc, char **argv) {
 
     char line[MAX_LINE];
     while (1) {
-        printf("vfs> ");
+        char cwd[MAX_CWD_PRINT] = "/";
+        if (g_mounted) vfs_getcwd(cwd, sizeof(cwd));
+        printf("vfs:%s> ", cwd);
         if (!fgets(line, sizeof(line), stdin)) break;
         line[strcspn(line, "\n")] = '\0';
         if (line[0] == '\0') continue;
@@ -200,10 +205,19 @@ int main(int argc, char **argv) {
         } else if (strcmp(cmd, "format") == 0) {
             char *p = strtok(NULL, " ");
             cmd_format(p ? p : disk_path);
+        } else if (strcmp(cmd, "cd") == 0) {
+            if (!g_mounted) { ensure_mounted(); continue; }
+            char *p = strtok(NULL, " ");
+            if (vfs_chdir(p ? p : "/") != 0) printf("cd: %s\n", vfs_last_error());
+        } else if (strcmp(cmd, "pwd") == 0) {
+            if (!g_mounted) { ensure_mounted(); continue; }
+            char buf[MAX_CWD_PRINT];
+            vfs_getcwd(buf, sizeof(buf));
+            printf("%s\n", buf);
         } else if (strcmp(cmd, "ls") == 0) {
             if (!g_mounted) { ensure_mounted(); continue; }
             char *p = strtok(NULL, " ");
-            if (vfs_listdir(p ? p : "/", ls_cb, NULL) != 0) printf("ls: %s\n", vfs_last_error());
+            if (vfs_listdir(p ? p : ".", ls_cb, NULL) != 0) printf("ls: %s\n", vfs_last_error());
         } else if (strcmp(cmd, "mkdir") == 0) {
             if (!g_mounted) { ensure_mounted(); continue; }
             char *p = strtok(NULL, " ");
